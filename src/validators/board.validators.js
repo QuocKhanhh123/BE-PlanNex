@@ -8,5 +8,8 @@ const createBoardSchema = z.object({
     keySlug: z.string().max(16).optional()
 });
 
+const renameBoardSchema = z.object({
+    name: z.string().min(1)
+});
 
-module.exports = { createBoardSchema };
+module.exports = { createBoardSchema, renameBoardSchema };

@@ -7,5 +7,9 @@ const createWorkspaceSchema = z.object({
     visibility: z.enum(['private', 'public']).optional()
 });
 
+const inviteMemberSchema = z.object({
+    email: z.string().email(),
+    role: z.enum(['admin', 'member', 'guest']).optional()
+});
 
-module.exports = { createWorkspaceSchema };
+module.exports = { createWorkspaceSchema, inviteMemberSchema };

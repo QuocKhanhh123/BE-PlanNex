@@ -1,5 +1,5 @@
 const { prisma } = require('../shared/prisma');
-const { createBoardSchema } = require('../validators/board.validators');
+const { createBoardSchema, renameBoardSchema } = require('../validators/board.validators');
 
 
 async function createBoard(req, res) {
@@ -41,4 +41,54 @@ async function getBoard(req, res) {
   return res.json({ board });
 }
 
-module.exports = { createBoard, getBoard };
+async function renameBoard(req, res) {
+  const { boardId } = req.params;
+  const parsed = renameBoardSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const { name } = parsed.data;
+
+  const member = await prisma.boardMember.findFirst({ 
+    where: { boardId, userId: req.user.id } 
+  });
+  if (!member) return res.status(403).json({ error: 'Access denied to this board' });
+
+  const board = await prisma.board.findUnique({ where: { id: boardId } });
+  const existingBoard = await prisma.board.findFirst({
+    where: { 
+      workspaceId: board.workspaceId, 
+      name: name,
+      id: { not: boardId }
+    }
+  });
+  if (existingBoard) {
+    return res.status(400).json({ error: 'Board name already exists in this workspace' });
+  }
+
+  const updatedBoard = await prisma.board.update({
+    where: { id: boardId },
+    data: { name }
+  });
+
+  return res.json({ board: updatedBoard });
+}
+
+async function deleteBoard(req, res) {
+  const { boardId } = req.params;
+
+  const member = await prisma.boardMember.findFirst({ 
+    where: { boardId, userId: req.user.id } 
+  });
+  if (!member) return res.status(403).json({ error: 'Access denied to this board' });
+
+  if (member.role !== 'admin') {
+    return res.status(403).json({ error: 'Only admin can delete board' });
+  }
+
+  await prisma.board.delete({
+    where: { id: boardId }
+  });
+
+  return res.json({ message: 'Board deleted successfully' });
+}
+
+module.exports = { createBoard, getBoard, renameBoard, deleteBoard };
