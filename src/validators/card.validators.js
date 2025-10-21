@@ -32,5 +32,8 @@ const moveCardSchema = z.object({
     toIndex: z.number().int().nonnegative()
 });
 
+const assignMemberSchema = z.object({
+    userId: z.string().min(1)
+});
 
-module.exports = { createCardSchema, updateCardSchema, moveCardSchema };
+module.exports = { createCardSchema, updateCardSchema, moveCardSchema, assignMemberSchema };

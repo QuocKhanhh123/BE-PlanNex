@@ -1,5 +1,5 @@
 const { prisma } = require('../shared/prisma');
-const { createCardSchema, updateCardSchema, moveCardSchema } = require('../validators/card.validators');
+const { createCardSchema, updateCardSchema, moveCardSchema, assignMemberSchema } = require('../validators/card.validators');
 
 function makeBoardKey(prefix, seq) {
     if (prefix && prefix.trim()) return `${prefix.trim().toUpperCase()}-${seq}`;
@@ -191,5 +191,42 @@ async function moveCard(req, res) {
     res.json({ card: updated });
 }
 
+async function assignMember(req, res) {
+    const { cardId } = req.params;
+    const parsed = assignMemberSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const { userId } = parsed.data;
 
-module.exports = { createCard, getCard, updateCard, deleteCard, moveCard, listCardsByList };
+    const card = await prisma.card.findUnique({ where: { id: cardId } });
+    if (!card) return res.status(404).json({ error: 'Card not found' });
+
+    const member = await prisma.boardMember.findFirst({ where: { boardId: card.boardId, userId: req.user.id } });
+    if (!member) return res.status(403).json({ error: 'Not a board member' });
+
+    const targetMember = await prisma.boardMember.findFirst({ where: { boardId: card.boardId, userId } });
+    if (!targetMember) return res.status(400).json({ error: 'User is not a board member' });
+
+    const existingAssignment = await prisma.cardMember.findFirst({ where: { cardId, userId } });
+    if (existingAssignment) return res.status(400).json({ error: 'User is already assigned to this card' });
+
+    const assignment = await prisma.cardMember.create({ data: { cardId, userId } });
+    res.status(201).json({ assignment });
+}
+
+async function removeMember(req, res) {
+    const { cardId, userId } = req.params;
+
+    const card = await prisma.card.findUnique({ where: { id: cardId } });
+    if (!card) return res.status(404).json({ error: 'Card not found' });
+
+    const member = await prisma.boardMember.findFirst({ where: { boardId: card.boardId, userId: req.user.id } });
+    if (!member) return res.status(403).json({ error: 'Not a board member' });
+
+    const assignment = await prisma.cardMember.findFirst({ where: { cardId, userId } });
+    if (!assignment) return res.status(404).json({ error: 'Assignment not found' });
+
+    await prisma.cardMember.delete({ where: { cardId_userId: { cardId, userId } } });
+    res.json({ success: true });
+}
+
+module.exports = { createCard, getCard, updateCard, deleteCard, moveCard, listCardsByList, assignMember, removeMember };
