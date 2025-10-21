@@ -9,7 +9,7 @@ function makeBoardKey(prefix, seq) {
 async function createCard(req, res) {
     const parsed = createCardSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-    const { boardId, listId, title, description, priority, dueDate, startDate, assigneeIds, labelIds, custom } = parsed.data;
+    const { boardId, listId, title, description, priority, dueDate, startDate, assigneeIds, labelIds, attachments, custom } = parsed.data;
 
 
     const member = await prisma.boardMember.findFirst({ where: { boardId, userId: req.user.id } });
@@ -22,68 +22,92 @@ async function createCard(req, res) {
 
     const board = await prisma.board.findUnique({ where: { id: boardId }, select: { id: true, keySlug: true } });
     if (!board) return res.status(404).json({ error: 'Board not found' });
-    const result = await prisma.$transaction(async (tx) => {
-        const maxOrder = await tx.card.aggregate({ where: { listId }, _max: { orderIdx: true } });
-        const orderIdx = (maxOrder._max.orderIdx ?? -1) + 1;
+    
+    try {
+        const result = await prisma.$transaction(async (tx) => {
+            const maxOrder = await tx.card.aggregate({ where: { listId }, _max: { orderIdx: true } });
+            const orderIdx = (maxOrder._max.orderIdx ?? -1) + 1;
 
-        const maxKey = await tx.card.aggregate({ where: { boardId }, _max: { keySeq: true } });
-        const keySeq = (maxKey._max.keySeq ?? 0) + 1;
+            const maxKey = await tx.card.aggregate({ where: { boardId }, _max: { keySeq: true } });
+            const keySeq = (maxKey._max.keySeq ?? 0) + 1;
 
+            const card = await tx.card.create({
+                data: {
+                    boardId,
+                    listId,
+                    keySeq,
+                    title,
+                    description: description ?? null,
+                    priority: priority ?? 'medium',
+                    dueDate: dueDate ? new Date(dueDate) : null,
+                    startDate: startDate ? new Date(startDate) : null,
+                    orderIdx,
+                    custom: custom ?? null,
+                    reporterId: req.user.id,
+                    createdById: req.user.id,
+                }
+            });
 
-        const card = await tx.card.create({
-            data: {
-                boardId,
-                listId,
-                keySeq,
-                title,
-                description: description ?? null,
-                priority: priority ?? 'medium',
-                dueDate: dueDate ? new Date(dueDate) : null,
-                startDate: startDate ? new Date(startDate) : null,
-                orderIdx,
-                custom: custom ?? null,
-                reporterId: req.user.id,
-                createdById: req.user.id,
+            let assigned = [];
+            if (assigneeIds && assigneeIds.length) {
+                const validMembers = await tx.boardMember.findMany({
+                    where: { boardId, userId: { in: assigneeIds } },
+                    select: { userId: true }
+                });
+                const uniqueUserIds = [...new Set(validMembers.map(m => m.userId))];
+                if (uniqueUserIds.length) {
+                    assigned = await Promise.all(uniqueUserIds.map(uid => tx.cardMember.create({ data: { cardId: card.id, userId: uid } })));
+                }
             }
+
+            let attachedLabels = [];
+            if (labelIds && labelIds.length) {
+                const validLabels = await tx.label.findMany({
+                    where: { boardId, id: { in: labelIds } },
+                    select: { id: true }
+                });
+                const uniqueLabelIds = [...new Set(validLabels.map(l => l.id))];
+                if (uniqueLabelIds.length) {
+                    attachedLabels = await Promise.all(uniqueLabelIds.map(lid => tx.cardLabel.create({ data: { cardId: card.id, labelId: lid } })));
+                }
+            }
+
+            let attachedFiles = [];
+            if (attachments && attachments.length) {
+                attachedFiles = await Promise.all(attachments.map(attachment => 
+                    tx.cardAttachment.create({
+                        data: {
+                            cardId: card.id,
+                            fileName: attachment.fileName,
+                            fileSize: attachment.fileSize,
+                            mimeType: attachment.mimeType,
+                            fileUrl: attachment.fileUrl,
+                            uploadedById: req.user.id
+                        }
+                    })
+                ));
+            }
+
+            return { card, assigned, attachedLabels, attachedFiles, keySeq };
+        }, {
+            timeout: 10000,
+            isolationLevel: 'ReadCommitted'
         });
 
-        let assigned = [];
-        if (assigneeIds && assigneeIds.length) {
-            const validMembers = await tx.boardMember.findMany({
-                where: { boardId, userId: { in: assigneeIds } },
-                select: { userId: true }
-            });
-            const uniqueUserIds = [...new Set(validMembers.map(m => m.userId))];
-            if (uniqueUserIds.length) {
-                assigned = await Promise.all(uniqueUserIds.map(uid => tx.cardMember.create({ data: { cardId: card.id, userId: uid } })));
+        const humanKey = makeBoardKey(board.keySlug, result.keySeq);
+        return res.status(201).json({
+            card: {
+                ...result.card,
+                key: humanKey,
+                members: result.assigned,
+                labels: result.attachedLabels,
+                attachments: result.attachedFiles
             }
-        }
-
-        let attachedLabels = [];
-        if (labelIds && labelIds.length) {
-            const validLabels = await tx.label.findMany({
-                where: { boardId, id: { in: labelIds } },
-                select: { id: true }
-            });
-            const uniqueLabelIds = [...new Set(validLabels.map(l => l.id))];
-            if (uniqueLabelIds.length) {
-                attachedLabels = await Promise.all(uniqueLabelIds.map(lid => tx.cardLabel.create({ data: { cardId: card.id, labelId: lid } })));
-            }
-        }
-
-
-        return { card, assigned, attachedLabels, keySeq };
-    });
-
-    const humanKey = makeBoardKey(board.keySlug, result.keySeq);
-    return res.status(201).json({
-        card: {
-            ...result.card,
-            key: humanKey,
-            members: result.assigned,
-            labels: result.attachedLabels
-        }
-    });
+        });
+    } catch (error) {
+        console.error('Transaction error:', error);
+        return res.status(500).json({ error: 'Failed to create card' });
+    }
 }
 
 async function listCardsByList(req, res) {
@@ -229,4 +253,48 @@ async function removeMember(req, res) {
     res.json({ success: true });
 }
 
-module.exports = { createCard, getCard, updateCard, deleteCard, moveCard, listCardsByList, assignMember, removeMember };
+async function getCardAttachments(req, res) {
+    const { cardId } = req.params;
+
+    const card = await prisma.card.findUnique({ where: { id: cardId } });
+    if (!card) return res.status(404).json({ error: 'Card not found' });
+
+    const member = await prisma.boardMember.findFirst({ where: { boardId: card.boardId, userId: req.user.id } });
+    if (!member) return res.status(403).json({ error: 'Not a board member' });
+
+    const attachments = await prisma.cardAttachment.findMany({
+        where: { cardId },
+        include: {
+            uploadedBy: {
+                select: { id: true, fullName: true, email: true }
+            }
+        },
+        orderBy: { uploadedAt: 'desc' }
+    });
+
+    res.json({ attachments });
+}
+
+async function deleteAttachment(req, res) {
+    const { cardId, attachmentId } = req.params;
+
+    const card = await prisma.card.findUnique({ where: { id: cardId } });
+    if (!card) return res.status(404).json({ error: 'Card not found' });
+
+    const member = await prisma.boardMember.findFirst({ where: { boardId: card.boardId, userId: req.user.id } });
+    if (!member) return res.status(403).json({ error: 'Not a board member' });
+
+    const attachment = await prisma.cardAttachment.findFirst({
+        where: { id: attachmentId, cardId }
+    });
+    if (!attachment) return res.status(404).json({ error: 'Attachment not found' });
+
+    if (attachment.uploadedById !== req.user.id && !['admin', 'maintainer'].includes(member.role)) {
+        return res.status(403).json({ error: 'Permission denied' });
+    }
+
+    await prisma.cardAttachment.delete({ where: { id: attachmentId } });
+    res.json({ message: 'Attachment deleted successfully' });
+}
+
+module.exports = { createCard, getCard, updateCard, deleteCard, moveCard, listCardsByList, assignMember, removeMember, getCardAttachments, deleteAttachment };

@@ -51,6 +51,12 @@ model User {
 
   // Comments authored
   commentsAuthored Comment[] @relation("CommentAuthor")
+
+  // Workspace invitations sent
+  workspaceInvitationsSent WorkspaceInvitation[] @relation("WorkspaceInvitationSender")
+
+  // Card attachments uploaded
+  cardAttachmentsUploaded CardAttachment[] @relation("CardAttachmentUploader")
 }
 
 model RefreshToken {
@@ -69,16 +75,17 @@ model RefreshToken {
 }
 
 model Workspace {
-  id          String            @id @default(cuid())
+  id          String                @id @default(cuid())
   name        String
   description String?
-  visibility  String            @default("private") // private|public
+  visibility  String                @default("private") // private|public
   ownerId     String
-  owner       User              @relation("WorkspaceOwner", fields: [ownerId], references: [id])
+  owner       User                  @relation("WorkspaceOwner", fields: [ownerId], references: [id])
   members     WorkspaceMember[]
+  invitations WorkspaceInvitation[]
   boards      Board[]
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
 }
 
 model WorkspaceMember {
@@ -98,6 +105,26 @@ model WorkspaceMember {
 
   @@unique([workspaceId, userId])
   @@index([workspaceId])
+}
+
+model WorkspaceInvitation {
+  id          String    @id @default(cuid())
+  workspaceId String
+  email       String
+  role        String    @default("member") // admin|member|guest
+  status      String    @default("pending") // pending|accepted|rejected|expired
+  invitedById String
+  invitedAt   DateTime  @default(now())
+  respondedAt DateTime?
+  expiresAt   DateTime
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy User      @relation("WorkspaceInvitationSender", fields: [invitedById], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, email])
+  @@index([workspaceId])
+  @@index([email])
+  @@index([status])
 }
 
 model Board {
@@ -181,9 +208,10 @@ model Card {
   createdBy User  @relation("CardCreator", fields: [createdById], references: [id])
   updatedBy User? @relation("CardUpdater", fields: [updatedById], references: [id])
 
-  members  CardMember[]
-  labels   CardLabel[]
-  comments Comment[]
+  members     CardMember[]
+  labels      CardLabel[]
+  comments    Comment[]
+  attachments CardAttachment[]
 
   @@unique([boardId, keySeq])
   @@index([boardId, listId, orderIdx])
@@ -220,6 +248,22 @@ model CardLabel {
   label Label @relation(fields: [labelId], references: [id], onDelete: Cascade)
 
   @@id([cardId, labelId])
+}
+
+model CardAttachment {
+  id        String   @id @default(cuid())
+  cardId    String
+  fileName  String
+  fileSize  Int
+  mimeType  String
+  fileUrl   String
+  uploadedById String
+  uploadedAt DateTime @default(now())
+
+  card      Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  uploadedBy User @relation("CardAttachmentUploader", fields: [uploadedById], references: [id], onDelete: Cascade)
+
+  @@index([cardId])
 }
 
 model Comment {
