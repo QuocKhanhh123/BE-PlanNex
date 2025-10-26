@@ -6,6 +6,9 @@
 
 generator client {
   provider = "prisma-client-js"
+  engineType = "binary"
+  previewFeatures = ["fullTextSearchPostgres"]
+  binaryTargets = ["native"]
 }
 
 datasource db {

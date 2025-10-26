@@ -25,118 +25,185 @@ async function createCard(req, res) {
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     const { boardId, listId, title, description, priority, dueDate, startDate, assigneeIds, labelIds, attachments, custom } = parsed.data;
 
-
-    const { board, workspaceMember } = await checkWorkspaceAccess(boardId, req.user.id);
-    if (!board) return res.status(404).json({ error: 'Board not found' });
-    if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
-
-
-    const list = await prisma.list.findUnique({ where: { id: listId } });
-    if (!list || list.boardId !== boardId) return res.status(400).json({ error: 'Invalid list/board' });
-
-
-    const boardInfo = await prisma.board.findUnique({ where: { id: boardId }, select: { id: true, keySlug: true } });
-    if (!boardInfo) return res.status(404).json({ error: 'Board not found' });
+    // Fetch board with workspace info in one query
+    const boardInfo = await prisma.board.findUnique({ 
+        where: { id: boardId }, 
+        select: { 
+            id: true, 
+            keySlug: true, 
+            workspaceId: true,
+            lists: {
+                where: { id: listId },
+                select: { id: true }
+            }
+        } 
+    });
     
-    try {
-        const result = await prisma.$transaction(async (tx) => {
-            const maxOrder = await tx.card.aggregate({ where: { listId }, _max: { orderIdx: true } });
-            const orderIdx = (maxOrder._max.orderIdx ?? -1) + 1;
+    if (!boardInfo) return res.status(404).json({ error: 'Board not found' });
+    if (!boardInfo.lists.length) return res.status(400).json({ error: 'Invalid list' });
 
-            const maxKey = await tx.card.aggregate({ where: { boardId }, _max: { keySeq: true } });
-            const keySeq = (maxKey._max.keySeq ?? 0) + 1;
+    // Check workspace access
+    const workspaceMember = await prisma.workspaceMember.findFirst({
+        where: { workspaceId: boardInfo.workspaceId, userId: req.user.id },
+        select: { role: true }
+    });
+    
+    if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
+    if (!['owner', 'admin'].includes(workspaceMember.role)) {
+        return res.status(403).json({ error: 'Only workspace owners and admins can create cards' });
+    }
 
-            const card = await tx.card.create({
-                data: {
-                    boardId,
-                    listId,
-                    keySeq,
-                    title,
-                    description: description ?? null,
-                    priority: priority ?? 'medium',
-                    dueDate: dueDate ? new Date(dueDate) : null,
-                    startDate: startDate ? new Date(startDate) : null,
-                    orderIdx,
-                    custom: custom ?? null,
-                    reporterId: req.user.id,
-                    createdById: req.user.id,
+    // Get max values in parallel
+    const [maxOrder, maxKey] = await Promise.all([
+        prisma.card.aggregate({ where: { listId }, _max: { orderIdx: true } }),
+        prisma.card.aggregate({ where: { boardId }, _max: { keySeq: true } })
+    ]);
+    
+    const orderIdx = (maxOrder._max.orderIdx ?? -1) + 1;
+    const keySeq = (maxKey._max.keySeq ?? 0) + 1;
+
+    // Create card
+    const card = await prisma.card.create({
+        data: {
+            boardId,
+            listId,
+            keySeq,
+            title,
+            description: description ?? null,
+            priority: priority ?? 'medium',
+            dueDate: dueDate ? new Date(dueDate) : null,
+            startDate: startDate ? new Date(startDate) : null,
+            orderIdx,
+            custom: custom ?? null,
+            reporterId: req.user.id,
+            createdById: req.user.id,
+        }
+    });
+
+    // Process members, labels, attachments in parallel
+    const [members, labels, cardAttachments] = await Promise.all([
+        // Members
+        (async () => {
+            if (!assigneeIds?.length) return [];
+            
+            const validUsers = await prisma.user.findMany({
+                where: { id: { in: assigneeIds } },
+                select: { id: true, fullName: true, email: true }
+            });
+            
+            if (!validUsers.length) return [];
+            
+            await prisma.cardMember.createMany({
+                data: validUsers.map(u => ({ cardId: card.id, userId: u.id })),
+                skipDuplicates: true
+            });
+            
+            return validUsers.map(u => ({ userId: u.id, user: u }));
+        })(),
+        
+        // Labels
+        (async () => {
+            if (!labelIds?.length) return [];
+            
+            const validLabels = await prisma.label.findMany({
+                where: { boardId, id: { in: labelIds } },
+                select: { id: true, name: true, colorHex: true }
+            });
+            
+            if (!validLabels.length) return [];
+            
+            await prisma.cardLabel.createMany({
+                data: validLabels.map(l => ({ cardId: card.id, labelId: l.id })),
+                skipDuplicates: true
+            });
+            
+            return validLabels.map(l => ({ labelId: l.id, label: l }));
+        })(),
+        
+        // Attachments
+        (async () => {
+            if (!attachments?.length) return [];
+            
+            return prisma.cardAttachment.createManyAndReturn({
+                data: attachments.map(a => ({
+                    cardId: card.id,
+                    fileName: a.fileName,
+                    fileSize: a.fileSize,
+                    mimeType: a.mimeType,
+                    fileUrl: a.fileUrl,
+                    uploadedById: req.user.id
+                })),
+                select: {
+                    id: true,
+                    fileName: true,
+                    fileSize: true,
+                    mimeType: true,
+                    fileUrl: true,
+                    uploadedAt: true
                 }
             });
+        })()
+    ]);
 
-            let assigned = [];
-            if (assigneeIds && assigneeIds.length) {
-                const validMembers = await tx.workspaceMember.findMany({
-                    where: { workspaceId: board.workspaceId, userId: { in: assigneeIds } },
-                    select: { userId: true }
-                });
-                const uniqueUserIds = [...new Set(validMembers.map(m => m.userId))];
-                if (uniqueUserIds.length) {
-                    assigned = await Promise.all(uniqueUserIds.map(uid => tx.cardMember.create({ data: { cardId: card.id, userId: uid } })));
-                }
-            }
-
-            let attachedLabels = [];
-            if (labelIds && labelIds.length) {
-                const validLabels = await tx.label.findMany({
-                    where: { boardId, id: { in: labelIds } },
-                    select: { id: true }
-                });
-                const uniqueLabelIds = [...new Set(validLabels.map(l => l.id))];
-                if (uniqueLabelIds.length) {
-                    attachedLabels = await Promise.all(uniqueLabelIds.map(lid => tx.cardLabel.create({ data: { cardId: card.id, labelId: lid } })));
-                }
-            }
-
-            let attachedFiles = [];
-            if (attachments && attachments.length) {
-                attachedFiles = await Promise.all(attachments.map(attachment => 
-                    tx.cardAttachment.create({
-                        data: {
-                            cardId: card.id,
-                            fileName: attachment.fileName,
-                            fileSize: attachment.fileSize,
-                            mimeType: attachment.mimeType,
-                            fileUrl: attachment.fileUrl,
-                            uploadedById: req.user.id
-                        }
-                    })
-                ));
-            }
-
-            return { card, assigned, attachedLabels, attachedFiles, keySeq };
-        }, {
-            timeout: 10000,
-            isolationLevel: 'ReadCommitted'
-        });
-
-        const humanKey = makeBoardKey(boardInfo.keySlug, result.keySeq);
-        return res.status(201).json({
-            card: {
-                ...result.card,
-                key: humanKey,
-                members: result.assigned,
-                labels: result.attachedLabels,
-                attachments: result.attachedFiles
-            }
-        });
-    } catch (error) {
-        console.error('Transaction error:', error);
-        return res.status(500).json({ error: 'Failed to create card' });
-    }
+    const humanKey = makeBoardKey(boardInfo.keySlug, keySeq);
+    return res.status(201).json({
+        card: {
+            id: card.id,
+            boardId: card.boardId,
+            listId: card.listId,
+            key: humanKey,
+            keySeq: keySeq,
+            title: card.title,
+            description: card.description,
+            priority: card.priority,
+            dueDate: card.dueDate,
+            startDate: card.startDate,
+            orderIdx: card.orderIdx,
+            custom: card.custom,
+            reporterId: card.reporterId,
+            createdById: card.createdById,
+            createdAt: card.createdAt,
+            updatedAt: card.updatedAt,
+            members,
+            labels,
+            attachments: cardAttachments
+        }
+    });
 }
 
 async function listCardsByList(req, res) {
     const { listId } = req.params;
-    const list = await prisma.list.findUnique({ where: { id: listId }, select: { id: true, boardId: true } });
+    
+    const { q, labelId, memberId, offset = '0', limit = '50' } = req.query;
+    const take = Math.min(Math.max(parseInt(String(limit), 10) || 50, 1), 200);
+    const skip = Math.max(parseInt(String(offset), 10) || 0, 0);
+
+    // Get list with board info in one query
+    const list = await prisma.list.findUnique({ 
+        where: { id: listId }, 
+        select: { 
+            id: true, 
+            boardId: true,
+            board: {
+                select: {
+                    id: true,
+                    keySlug: true,
+                    workspaceId: true
+                }
+            }
+        } 
+    });
+    
     if (!list) return res.status(404).json({ error: 'List not found' });
 
-    // membership via workspace
-    const { board, workspaceMember } = await checkWorkspaceAccess(list.boardId, req.user.id);
-    if (!board) return res.status(404).json({ error: 'Board not found' });
+    // Check workspace membership
+    const workspaceMember = await prisma.workspaceMember.findFirst({
+        where: { workspaceId: list.board.workspaceId, userId: req.user.id }
+    });
+    
     if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
-    const { q, labelId, memberId, offset = '0', limit = '50' } = req.query;
-
+    // Build where clause
     const where = { listId };
     if (q) where.OR = [
         { title: { contains: String(q), mode: 'insensitive' } },
@@ -145,16 +212,39 @@ async function listCardsByList(req, res) {
     if (labelId) where.labels = { some: { labelId: String(labelId) } };
     if (memberId) where.members = { some: { userId: String(memberId) } };
 
-    const take = Math.min(Math.max(parseInt(String(limit), 10) || 50, 1), 200);
-    const skip = Math.max(parseInt(String(offset), 10) || 0, 0);
-
-    const [items, total] = await Promise.all([
+    // Fetch cards and count in parallel
+    const [cards, total] = await Promise.all([
         prisma.card.findMany({
             where,
-            include: {
-                list: { select: { id: true, name: true } },
-                labels: { include: { label: true } },
-                members: { include: { user: { select: { id: true, fullName: true } } } }
+            select: {
+                id: true,
+                boardId: true,
+                listId: true,
+                keySeq: true,
+                title: true,
+                description: true,
+                priority: true,
+                dueDate: true,
+                startDate: true,
+                orderIdx: true,
+                createdAt: true,
+                updatedAt: true,
+                labels: {
+                    select: {
+                        labelId: true,
+                        label: {
+                            select: { id: true, name: true, colorHex: true }
+                        }
+                    }
+                },
+                members: {
+                    select: {
+                        userId: true,
+                        user: {
+                            select: { id: true, fullName: true, email: true }
+                        }
+                    }
+                }
             },
             orderBy: [{ orderIdx: 'asc' }, { updatedAt: 'desc' }],
             skip,
@@ -163,20 +253,111 @@ async function listCardsByList(req, res) {
         prisma.card.count({ where })
     ]);
 
+    // Map cards with key
+    const items = cards.map(card => ({
+        id: card.id,
+        boardId: card.boardId,
+        listId: card.listId,
+        key: makeBoardKey(list.board.keySlug, card.keySeq),
+        keySeq: card.keySeq,
+        title: card.title,
+        description: card.description,
+        priority: card.priority,
+        dueDate: card.dueDate,
+        startDate: card.startDate,
+        orderIdx: card.orderIdx,
+        createdAt: card.createdAt,
+        updatedAt: card.updatedAt,
+        members: card.members,
+        labels: card.labels
+    }));
+
     return res.json({ total, offset: skip, limit: take, items });
 }
 
 async function getCard(req, res) {
     const { cardId } = req.params;
-    const card = await prisma.card.findUnique({ where: { id: cardId } });
+    
+    // Get card with all related data in one query
+    const card = await prisma.card.findUnique({ 
+        where: { id: cardId },
+        select: {
+            id: true,
+            boardId: true,
+            listId: true,
+            keySeq: true,
+            title: true,
+            description: true,
+            priority: true,
+            dueDate: true,
+            startDate: true,
+            orderIdx: true,
+            custom: true,
+            reporterId: true,
+            createdById: true,
+            updatedById: true,
+            createdAt: true,
+            updatedAt: true,
+            board: {
+                select: {
+                    id: true,
+                    keySlug: true,
+                    workspaceId: true
+                }
+            },
+            labels: {
+                select: {
+                    labelId: true,
+                    label: {
+                        select: { id: true, name: true, colorHex: true }
+                    }
+                }
+            },
+            members: {
+                select: {
+                    userId: true,
+                    user: {
+                        select: { id: true, fullName: true, email: true }
+                    }
+                }
+            }
+        }
+    });
+    
     if (!card) return res.status(404).json({ error: 'Card not found' });
     
-    const { board, workspaceMember } = await checkWorkspaceAccess(card.boardId, req.user.id);
-    if (!board) return res.status(404).json({ error: 'Board not found' });
+    // Check workspace membership
+    const workspaceMember = await prisma.workspaceMember.findFirst({
+        where: { workspaceId: card.board.workspaceId, userId: req.user.id }
+    });
+    
     if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
     
-    const full = await prisma.card.findUnique({ where: { id: cardId }, include: { labels: true, members: true } });
-    res.json({ card: full });
+    // Format response
+    const humanKey = makeBoardKey(card.board.keySlug, card.keySeq);
+    res.json({ 
+        card: {
+            id: card.id,
+            boardId: card.boardId,
+            listId: card.listId,
+            key: humanKey,
+            keySeq: card.keySeq,
+            title: card.title,
+            description: card.description,
+            priority: card.priority,
+            dueDate: card.dueDate,
+            startDate: card.startDate,
+            orderIdx: card.orderIdx,
+            custom: card.custom,
+            reporterId: card.reporterId,
+            createdById: card.createdById,
+            updatedById: card.updatedById,
+            createdAt: card.createdAt,
+            updatedAt: card.updatedAt,
+            members: card.members,
+            labels: card.labels
+        }
+    });
 }
 
 
@@ -216,25 +397,45 @@ async function moveCard(req, res) {
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     const { toListId, toIndex } = parsed.data;
 
-
-    const card = await prisma.card.findUnique({ where: { id: cardId } });
+    // Get card with board info in one query
+    const card = await prisma.card.findUnique({ 
+        where: { id: cardId },
+        select: {
+            id: true,
+            boardId: true,
+            listId: true,
+            board: {
+                select: { workspaceId: true }
+            }
+        }
+    });
+    
     if (!card) return res.status(404).json({ error: 'Card not found' });
-    const { board, workspaceMember } = await checkWorkspaceAccess(card.boardId, req.user.id);
-    if (!board) return res.status(404).json({ error: 'Board not found' });
+
+    // Check workspace membership
+    const workspaceMember = await prisma.workspaceMember.findFirst({
+        where: { workspaceId: card.board.workspaceId, userId: req.user.id }
+    });
+    
     if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
+    // Move card - update in parallel
+    await Promise.all([
+        prisma.$executeRawUnsafe(
+            'UPDATE "Card" SET "orderIdx" = "orderIdx" + 1 WHERE "listId" = $1 AND "orderIdx" >= $2 AND "id" != $3',
+            toListId, toIndex, cardId
+        ),
+        prisma.card.update({ 
+            where: { id: cardId }, 
+            data: { 
+                listId: toListId, 
+                orderIdx: toIndex, 
+                updatedById: req.user.id 
+            } 
+        })
+    ]);
 
-    await prisma.$transaction(async (tx) => {
-        await tx.$executeRawUnsafe(
-            'UPDATE "Card" SET "orderIdx" = "orderIdx" + 1 WHERE "listId" = $1 AND "orderIdx" >= $2',
-            toListId, toIndex
-        );
-        await tx.card.update({ where: { id: cardId }, data: { listId: toListId, orderIdx: toIndex, updatedById: req.user.id } });
-    });
-
-
-    const updated = await prisma.card.findUnique({ where: { id: cardId } });
-    res.json({ card: updated });
+    res.json({ success: true });
 }
 
 async function assignCardMember(req, res) {

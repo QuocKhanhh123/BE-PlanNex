@@ -67,6 +67,28 @@ async function listMyWorkspaces(req, res) {
     res.json({ workspaces: wss });
 }
 
+async function getWorkspaceMembers(req, res) {
+    const { workspaceId } = req.params;
+
+    const members = await prisma.workspaceMember.findMany({
+        where: { workspaceId },
+        select: {
+            id: true,
+            role: true,
+            joinedAt: true,
+            user: { 
+                select: { 
+                    id: true, 
+                    email: true, 
+                    fullName: true
+                } 
+            }
+        }
+    });
+
+    res.json({ members });
+}
+
 async function inviteMember(req, res) {
     const { workspaceId } = req.params;
     const parsed = inviteMemberSchema.safeParse(req.body);
@@ -311,4 +333,4 @@ async function updateMemberRole(req, res) {
     res.json({ member: updated });
 }
 
-module.exports = { createWorkspace, updateWorkspace, deleteWorkspace, listMyWorkspaces, inviteMember, acceptInvitation, rejectInvitation, listMyInvitations, removeMember, leaveWorkspace, updateMemberRole };
+module.exports = { createWorkspace, updateWorkspace, deleteWorkspace, listMyWorkspaces, getWorkspaceMembers, inviteMember, acceptInvitation, rejectInvitation, listMyInvitations, removeMember, leaveWorkspace, updateMemberRole };
