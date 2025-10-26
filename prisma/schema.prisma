@@ -38,8 +38,6 @@ model User {
 
   // Board creator
   boardsCreated    Board[]       @relation("BoardCreator")
-  // Board membership
-  boardMemberships BoardMember[] @relation("BoardMembership")
 
   // Card reporter/creator/updater
   reportedCards Card[] @relation("CardReporter")
@@ -137,33 +135,16 @@ model Board {
   archivedAt  DateTime?
   createdById String
 
-  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  createdBy User          @relation("BoardCreator", fields: [createdById], references: [id])
-  members   BoardMember[]
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy User      @relation("BoardCreator", fields: [createdById], references: [id])
   lists     List[]
   labels    Label[]
   cards     Card[]
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   @@unique([workspaceId, name])
   @@index([workspaceId])
-}
-
-model BoardMember {
-  id        String    @id @default(cuid())
-  boardId   String
-  userId    String
-  role      String    @default("contributor") // admin|maintainer|contributor|viewer
-  invitedBy String?
-  invitedAt DateTime?
-  joinedAt  DateTime?
-
-  board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
-  user  User  @relation("BoardMembership", fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([boardId, userId])
-  @@index([boardId])
 }
 
 model List {

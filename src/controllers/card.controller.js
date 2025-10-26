@@ -1,6 +1,20 @@
 const { prisma } = require('../shared/prisma');
 const { createCardSchema, updateCardSchema, moveCardSchema, assignMemberSchema } = require('../validators/card.validators');
 
+async function checkWorkspaceAccess(boardId, userId) {
+  const board = await prisma.board.findUnique({ 
+    where: { id: boardId },
+    select: { workspaceId: true }
+  });
+  if (!board) return { board: null, workspaceMember: null };
+
+  const workspaceMember = await prisma.workspaceMember.findFirst({ 
+    where: { workspaceId: board.workspaceId, userId } 
+  });
+  
+  return { board, workspaceMember };
+}
+
 function makeBoardKey(prefix, seq) {
     if (prefix && prefix.trim()) return `${prefix.trim().toUpperCase()}-${seq}`;
     return `CARD-${seq}`;
@@ -12,16 +26,17 @@ async function createCard(req, res) {
     const { boardId, listId, title, description, priority, dueDate, startDate, assigneeIds, labelIds, attachments, custom } = parsed.data;
 
 
-    const member = await prisma.boardMember.findFirst({ where: { boardId, userId: req.user.id } });
-    if (!member) return res.status(403).json({ error: 'Not a board member' });
+    const { board, workspaceMember } = await checkWorkspaceAccess(boardId, req.user.id);
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+    if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
 
     const list = await prisma.list.findUnique({ where: { id: listId } });
     if (!list || list.boardId !== boardId) return res.status(400).json({ error: 'Invalid list/board' });
 
 
-    const board = await prisma.board.findUnique({ where: { id: boardId }, select: { id: true, keySlug: true } });
-    if (!board) return res.status(404).json({ error: 'Board not found' });
+    const boardInfo = await prisma.board.findUnique({ where: { id: boardId }, select: { id: true, keySlug: true } });
+    if (!boardInfo) return res.status(404).json({ error: 'Board not found' });
     
     try {
         const result = await prisma.$transaction(async (tx) => {
@@ -50,8 +65,8 @@ async function createCard(req, res) {
 
             let assigned = [];
             if (assigneeIds && assigneeIds.length) {
-                const validMembers = await tx.boardMember.findMany({
-                    where: { boardId, userId: { in: assigneeIds } },
+                const validMembers = await tx.workspaceMember.findMany({
+                    where: { workspaceId: board.workspaceId, userId: { in: assigneeIds } },
                     select: { userId: true }
                 });
                 const uniqueUserIds = [...new Set(validMembers.map(m => m.userId))];
@@ -94,7 +109,7 @@ async function createCard(req, res) {
             isolationLevel: 'ReadCommitted'
         });
 
-        const humanKey = makeBoardKey(board.keySlug, result.keySeq);
+        const humanKey = makeBoardKey(boardInfo.keySlug, result.keySeq);
         return res.status(201).json({
             card: {
                 ...result.card,
@@ -115,9 +130,10 @@ async function listCardsByList(req, res) {
     const list = await prisma.list.findUnique({ where: { id: listId }, select: { id: true, boardId: true } });
     if (!list) return res.status(404).json({ error: 'List not found' });
 
-    // membership via board
-    const bm = await prisma.boardMember.findFirst({ where: { boardId: list.boardId, userId: req.user.id } });
-    if (!bm) return res.status(403).json({ error: 'Not a board member' });
+    // membership via workspace
+    const { board, workspaceMember } = await checkWorkspaceAccess(list.boardId, req.user.id);
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+    if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
     const { q, labelId, memberId, offset = '0', limit = '50' } = req.query;
 
@@ -154,8 +170,11 @@ async function getCard(req, res) {
     const { cardId } = req.params;
     const card = await prisma.card.findUnique({ where: { id: cardId } });
     if (!card) return res.status(404).json({ error: 'Card not found' });
-    const member = await prisma.boardMember.findFirst({ where: { boardId: card.boardId, userId: req.user.id } });
-    if (!member) return res.status(403).json({ error: 'Not a board member' });
+    
+    const { board, workspaceMember } = await checkWorkspaceAccess(card.boardId, req.user.id);
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+    if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
+    
     const full = await prisma.card.findUnique({ where: { id: cardId }, include: { labels: true, members: true } });
     res.json({ card: full });
 }
@@ -170,8 +189,9 @@ async function updateCard(req, res) {
 
     const card = await prisma.card.findUnique({ where: { id: cardId } });
     if (!card) return res.status(404).json({ error: 'Card not found' });
-    const member = await prisma.boardMember.findFirst({ where: { boardId: card.boardId, userId: req.user.id } });
-    if (!member) return res.status(403).json({ error: 'Not a board member' });
+    const { board, workspaceMember } = await checkWorkspaceAccess(card.boardId, req.user.id);
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+    if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
 
     const updated = await prisma.card.update({ where: { id: cardId }, data: { ...patch, updatedById: req.user.id } });
@@ -182,8 +202,9 @@ async function deleteCard(req, res) {
     const { cardId } = req.params;
     const card = await prisma.card.findUnique({ where: { id: cardId } });
     if (!card) return res.status(404).json({ error: 'Card not found' });
-    const member = await prisma.boardMember.findFirst({ where: { boardId: card.boardId, userId: req.user.id } });
-    if (!member) return res.status(403).json({ error: 'Not a board member' });
+    const { board, workspaceMember } = await checkWorkspaceAccess(card.boardId, req.user.id);
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+    if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
     await prisma.card.delete({ where: { id: cardId } });
     res.json({ success: true });
 }
@@ -198,8 +219,9 @@ async function moveCard(req, res) {
 
     const card = await prisma.card.findUnique({ where: { id: cardId } });
     if (!card) return res.status(404).json({ error: 'Card not found' });
-    const member = await prisma.boardMember.findFirst({ where: { boardId: card.boardId, userId: req.user.id } });
-    if (!member) return res.status(403).json({ error: 'Not a board member' });
+    const { board, workspaceMember } = await checkWorkspaceAccess(card.boardId, req.user.id);
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+    if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
 
     await prisma.$transaction(async (tx) => {
@@ -215,7 +237,7 @@ async function moveCard(req, res) {
     res.json({ card: updated });
 }
 
-async function assignMember(req, res) {
+async function assignCardMember(req, res) {
     const { cardId } = req.params;
     const parsed = assignMemberSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
@@ -224,11 +246,12 @@ async function assignMember(req, res) {
     const card = await prisma.card.findUnique({ where: { id: cardId } });
     if (!card) return res.status(404).json({ error: 'Card not found' });
 
-    const member = await prisma.boardMember.findFirst({ where: { boardId: card.boardId, userId: req.user.id } });
-    if (!member) return res.status(403).json({ error: 'Not a board member' });
+    const { board, workspaceMember } = await checkWorkspaceAccess(card.boardId, req.user.id);
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+    if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
-    const targetMember = await prisma.boardMember.findFirst({ where: { boardId: card.boardId, userId } });
-    if (!targetMember) return res.status(400).json({ error: 'User is not a board member' });
+    const targetMember = await prisma.workspaceMember.findFirst({ where: { workspaceId: board.workspaceId, userId } });
+    if (!targetMember) return res.status(400).json({ error: 'User is not a workspace member' });
 
     const existingAssignment = await prisma.cardMember.findFirst({ where: { cardId, userId } });
     if (existingAssignment) return res.status(400).json({ error: 'User is already assigned to this card' });
@@ -237,14 +260,15 @@ async function assignMember(req, res) {
     res.status(201).json({ assignment });
 }
 
-async function removeMember(req, res) {
+async function removeCardMember(req, res) {
     const { cardId, userId } = req.params;
 
     const card = await prisma.card.findUnique({ where: { id: cardId } });
     if (!card) return res.status(404).json({ error: 'Card not found' });
 
-    const member = await prisma.boardMember.findFirst({ where: { boardId: card.boardId, userId: req.user.id } });
-    if (!member) return res.status(403).json({ error: 'Not a board member' });
+    const { board, workspaceMember } = await checkWorkspaceAccess(card.boardId, req.user.id);
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+    if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
     const assignment = await prisma.cardMember.findFirst({ where: { cardId, userId } });
     if (!assignment) return res.status(404).json({ error: 'Assignment not found' });
@@ -259,8 +283,9 @@ async function getCardAttachments(req, res) {
     const card = await prisma.card.findUnique({ where: { id: cardId } });
     if (!card) return res.status(404).json({ error: 'Card not found' });
 
-    const member = await prisma.boardMember.findFirst({ where: { boardId: card.boardId, userId: req.user.id } });
-    if (!member) return res.status(403).json({ error: 'Not a board member' });
+    const { board, workspaceMember } = await checkWorkspaceAccess(card.boardId, req.user.id);
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+    if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
     const attachments = await prisma.cardAttachment.findMany({
         where: { cardId },
@@ -281,8 +306,9 @@ async function deleteAttachment(req, res) {
     const card = await prisma.card.findUnique({ where: { id: cardId } });
     if (!card) return res.status(404).json({ error: 'Card not found' });
 
-    const member = await prisma.boardMember.findFirst({ where: { boardId: card.boardId, userId: req.user.id } });
-    if (!member) return res.status(403).json({ error: 'Not a board member' });
+    const { board, workspaceMember } = await checkWorkspaceAccess(card.boardId, req.user.id);
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+    if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
     const attachment = await prisma.cardAttachment.findFirst({
         where: { id: attachmentId, cardId }
@@ -297,4 +323,4 @@ async function deleteAttachment(req, res) {
     res.json({ message: 'Attachment deleted successfully' });
 }
 
-module.exports = { createCard, getCard, updateCard, deleteCard, moveCard, listCardsByList, assignMember, removeMember, getCardAttachments, deleteAttachment };
+module.exports = { createCard, getCard, updateCard, deleteCard, moveCard, listCardsByList, assignCardMember, removeCardMember, getCardAttachments, deleteAttachment };
