@@ -29,6 +29,21 @@ async function createBoard(req, res) {
   return res.status(201).json({ board: result.b, lists: result.lists });
 }
 
+async function getWorkSpaceBoards(req, res) {
+  const { workspaceId } = req.params;
+
+  const member = await prisma.workspaceMember.findFirst({
+    where: { workspaceId, userId: req.user.id }
+  });
+  if (!member) return res.status(403).json({ error: 'Not in workspace' });
+
+  const boards = await prisma.board.findMany({
+    where: { workspaceId },
+    include: { lists: { orderBy: { orderIdx: 'asc' } } }
+  });
+  return res.json({ boards });
+}
+
 async function getBoard(req, res) {
   const { boardId } = req.params;
   const member = await prisma.boardMember.findFirst({ where: { boardId, userId: req.user.id } });
@@ -91,4 +106,4 @@ async function deleteBoard(req, res) {
   return res.json({ message: 'Board deleted successfully' });
 }
 
-module.exports = { createBoard, getBoard, renameBoard, deleteBoard };
+module.exports = { createBoard,getWorkSpaceBoards, getBoard, renameBoard, deleteBoard };
