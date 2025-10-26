@@ -1,5 +1,5 @@
 const { prisma } = require('../shared/prisma');
-const { createWorkspaceSchema, inviteMemberSchema, updateWorkspaceSchema } = require('../validators/workspace.validators');
+const { createWorkspaceSchema, inviteMemberSchema, updateWorkspaceSchema, updateMemberRoleSchema } = require('../validators/workspace.validators');
 
 
 async function createWorkspace(req, res) {
@@ -252,4 +252,63 @@ async function removeMember(req, res) {
     res.json({ message: 'Member removed successfully' });
 }
 
-module.exports = { createWorkspace, updateWorkspace, deleteWorkspace , listMyWorkspaces, inviteMember, acceptInvitation, rejectInvitation, listMyInvitations, removeMember};
+async function leaveWorkspace(req, res) {
+    const { workspaceId } = req.params;
+
+    const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId } });
+    if (!workspace) return res.status(404).json({ error: 'Workspace not found' });
+
+    if (workspace.ownerId === req.user.id) {
+        return res.status(400).json({ error: 'Workspace owner cannot leave workspace' });
+    }
+
+    const member = await prisma.workspaceMember.findFirst({
+        where: { workspaceId, userId: req.user.id }
+    });
+    if (!member) return res.status(404).json({ error: 'You are not a member of this workspace' });
+
+    await prisma.workspaceMember.delete({
+        where: { id: member.id }
+    });
+
+    res.json({ message: 'Left workspace successfully' });
+}
+
+async function updateMemberRole(req, res) {
+    const { workspaceId, userId } = req.params;
+    const parsed = updateMemberRoleSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const { role } = parsed.data;
+
+    const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId } });
+    if (!workspace) return res.status(404).json({ error: 'Workspace not found' });
+
+    const currentMember = await prisma.workspaceMember.findFirst({
+        where: { workspaceId, userId: req.user.id }
+    });
+    if (!currentMember || !['owner', 'admin'].includes(currentMember.role)) {
+        return res.status(403).json({ error: 'Insufficient permissions' });
+    }
+
+    if (workspace.ownerId === userId) {
+        return res.status(400).json({ error: 'Cannot change workspace owner role' });
+    }
+
+    const targetMember = await prisma.workspaceMember.findFirst({
+        where: { workspaceId, userId }
+    });
+    if (!targetMember) return res.status(404).json({ error: 'Member not found' });
+
+    if (currentMember.role === 'admin' && targetMember.role === 'admin') {
+        return res.status(400).json({ error: 'Admin cannot change another admin role' });
+    }
+
+    const updated = await prisma.workspaceMember.update({
+        where: { id: targetMember.id },
+        data: { role }
+    });
+
+    res.json({ member: updated });
+}
+
+module.exports = { createWorkspace, updateWorkspace, deleteWorkspace, listMyWorkspaces, inviteMember, acceptInvitation, rejectInvitation, listMyInvitations, removeMember, leaveWorkspace, updateMemberRole };
