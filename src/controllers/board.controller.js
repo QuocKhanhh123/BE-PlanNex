@@ -10,15 +10,20 @@ async function createBoard(req, res) {
   const m = await prisma.workspaceMember.findFirst({ where: { workspaceId, userId: req.user.id } });
   if (!m) return res.status(403).json({ error: 'Not in workspace' });
 
+  // Only owner and admin can create boards
+  if (!['owner', 'admin'].includes(m.role)) {
+    return res.status(403).json({ error: 'Only workspace owner and admin can create boards' });
+  }
+
   const result = await prisma.$transaction(async (tx) => {
     const b = await tx.board.create({
       data: { workspaceId, name, mode, keySlug, createdById: req.user.id }
     });
 
 
-    const l1 = await tx.list.create({ data: { boardId: b.id, name: 'Todo',        orderIdx: 0 } });
-    const l2 = await tx.list.create({ data: { boardId: b.id, name: 'In Progress',  orderIdx: 1 } });
-    const l3 = await tx.list.create({ data: { boardId: b.id, name: 'Done',         orderIdx: 2, isDone: true } });
+    const l1 = await tx.list.create({ data: { boardId: b.id, name: 'Todo', orderIdx: 0 } });
+    const l2 = await tx.list.create({ data: { boardId: b.id, name: 'In Progress', orderIdx: 1 } });
+    const l3 = await tx.list.create({ data: { boardId: b.id, name: 'Done', orderIdx: 2, isDone: true } });
 
     return { b, lists: [l1, l2, l3] };
   });
@@ -43,19 +48,19 @@ async function getWorkSpaceBoards(req, res) {
 
 async function getBoard(req, res) {
   const { boardId } = req.params;
-  
+
   const board = await prisma.board.findUnique({
     where: { id: boardId },
-    include: { 
+    include: {
       workspace: true,
-      lists: { orderBy: { orderIdx: 'asc' } } 
+      lists: { orderBy: { orderIdx: 'asc' } }
     }
   });
-  
+
   if (!board) return res.status(404).json({ error: 'Board not found' });
 
-  const workspaceMember = await prisma.workspaceMember.findFirst({ 
-    where: { workspaceId: board.workspaceId, userId: req.user.id } 
+  const workspaceMember = await prisma.workspaceMember.findFirst({
+    where: { workspaceId: board.workspaceId, userId: req.user.id }
   });
   if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
@@ -71,14 +76,14 @@ async function renameBoard(req, res) {
   const board = await prisma.board.findUnique({ where: { id: boardId } });
   if (!board) return res.status(404).json({ error: 'Board not found' });
 
-  const workspaceMember = await prisma.workspaceMember.findFirst({ 
-    where: { workspaceId: board.workspaceId, userId: req.user.id } 
+  const workspaceMember = await prisma.workspaceMember.findFirst({
+    where: { workspaceId: board.workspaceId, userId: req.user.id }
   });
   if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
   const existingBoard = await prisma.board.findFirst({
-    where: { 
-      workspaceId: board.workspaceId, 
+    where: {
+      workspaceId: board.workspaceId,
       name: name,
       id: { not: boardId }
     }
@@ -101,8 +106,8 @@ async function deleteBoard(req, res) {
   const board = await prisma.board.findUnique({ where: { id: boardId } });
   if (!board) return res.status(404).json({ error: 'Board not found' });
 
-  const workspaceMember = await prisma.workspaceMember.findFirst({ 
-    where: { workspaceId: board.workspaceId, userId: req.user.id } 
+  const workspaceMember = await prisma.workspaceMember.findFirst({
+    where: { workspaceId: board.workspaceId, userId: req.user.id }
   });
   if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
@@ -117,4 +122,4 @@ async function deleteBoard(req, res) {
   return res.json({ message: 'Board deleted successfully' });
 }
 
-module.exports = { createBoard,getWorkSpaceBoards, getBoard, renameBoard, deleteBoard };
+module.exports = { createBoard, getWorkSpaceBoards, getBoard, renameBoard, deleteBoard };
