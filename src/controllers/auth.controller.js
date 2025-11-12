@@ -1,6 +1,6 @@
 const { prisma } = require('../shared/prisma');
 const { hashPassword, verifyPassword } = require('../utils/hash');
-const { registerSchema, loginSchema, updateProfileSchema } = require('../validators/auth.validators');
+const { registerSchema, loginSchema, updateProfileSchema, changePasswordSchema } = require('../validators/auth.validators');
 const { verifyRefresh } = require('../utils/jwt');
 const { issueTokenPair, rotateRefreshToken, revokeRefreshToken } = require('../services/token.service');
 
@@ -146,4 +146,30 @@ async function updateProfile(req, res) {
     return res.json({ user: updated });
 }
 
-module.exports = { register, login, refresh, logout, me, updateProfile };
+async function changePassword(req, res) {
+    const parsed = changePasswordSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const { currentPassword, newPassword } = parsed.data;
+
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const isCurrentPasswordValid = await verifyPassword(currentPassword, user.passwordHash);
+    if (!isCurrentPasswordValid) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    if (currentPassword === newPassword) {
+        return res.status(400).json({ error: 'New password must be different from current password' });
+    }
+
+    const newPasswordHash = await hashPassword(newPassword);
+    await prisma.user.update({
+        where: { id: req.user.id },
+        data: { passwordHash: newPasswordHash }
+    });
+
+    return res.json({ message: 'Password changed successfully' });
+}
+
+module.exports = { register, login, refresh, logout, me, updateProfile, changePassword };

@@ -21,4 +21,13 @@ const updateProfileSchema = z.object({
     description: z.string().max(500).optional().nullable()
 });
 
-module.exports = { registerSchema, loginSchema, updateProfileSchema };
+const changePasswordSchema = z.object({
+    currentPassword: z.string().min(6),
+    newPassword: z.string().min(6),
+    confirmPassword: z.string().min(6)
+}).refine((data) => data.newPassword === data.confirmPassword, {
+    message: "New password and confirm password do not match",
+    path: ["confirmPassword"]
+});
+
+module.exports = { registerSchema, loginSchema, updateProfileSchema, changePasswordSchema };
