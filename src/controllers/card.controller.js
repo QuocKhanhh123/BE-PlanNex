@@ -4,17 +4,17 @@ const { sendTaskAssignedNotification } = require('../services/notification.servi
 
 
 async function checkWorkspaceAccess(boardId, userId) {
-  const board = await prisma.board.findUnique({ 
-    where: { id: boardId },
-    select: { workspaceId: true }
-  });
-  if (!board) return { board: null, workspaceMember: null };
+    const board = await prisma.board.findUnique({
+        where: { id: boardId },
+        select: { workspaceId: true }
+    });
+    if (!board) return { board: null, workspaceMember: null };
 
-  const workspaceMember = await prisma.workspaceMember.findFirst({ 
-    where: { workspaceId: board.workspaceId, userId } 
-  });
-  
-  return { board, workspaceMember };
+    const workspaceMember = await prisma.workspaceMember.findFirst({
+        where: { workspaceId: board.workspaceId, userId }
+    });
+
+    return { board, workspaceMember };
 }
 
 function makeBoardKey(prefix, seq) {
@@ -28,19 +28,19 @@ async function createCard(req, res) {
     const { boardId, listId, title, description, priority, dueDate, startDate, assigneeIds, labelIds, attachments, custom } = parsed.data;
 
     // Fetch board with workspace info in one query
-    const boardInfo = await prisma.board.findUnique({ 
-        where: { id: boardId }, 
-        select: { 
-            id: true, 
-            keySlug: true, 
+    const boardInfo = await prisma.board.findUnique({
+        where: { id: boardId },
+        select: {
+            id: true,
+            keySlug: true,
             workspaceId: true,
             lists: {
                 where: { id: listId },
                 select: { id: true }
             }
-        } 
+        }
     });
-    
+
     if (!boardInfo) return res.status(404).json({ error: 'Board not found' });
     if (!boardInfo.lists.length) return res.status(400).json({ error: 'Invalid list' });
 
@@ -49,7 +49,7 @@ async function createCard(req, res) {
         where: { workspaceId: boardInfo.workspaceId, userId: req.user.id },
         select: { role: true }
     });
-    
+
     if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
     if (!['owner', 'admin'].includes(workspaceMember.role)) {
         return res.status(403).json({ error: 'Only workspace owners and admins can create cards' });
@@ -60,7 +60,7 @@ async function createCard(req, res) {
         prisma.card.aggregate({ where: { listId }, _max: { orderIdx: true } }),
         prisma.card.aggregate({ where: { boardId }, _max: { keySeq: true } })
     ]);
-    
+
     const orderIdx = (maxOrder._max.orderIdx ?? -1) + 1;
     const keySeq = (maxKey._max.keySeq ?? 0) + 1;
 
@@ -87,45 +87,66 @@ async function createCard(req, res) {
         // Members
         (async () => {
             if (!assigneeIds?.length) return [];
-            
+
             const validUsers = await prisma.user.findMany({
                 where: { id: { in: assigneeIds } },
                 select: { id: true, fullName: true, email: true }
             });
-            
+
             if (!validUsers.length) return [];
-            
+
             await prisma.cardMember.createMany({
                 data: validUsers.map(u => ({ cardId: card.id, userId: u.id })),
                 skipDuplicates: true
             });
-            
+
+            // Send notification to assigned members (excluding the creator)
+            validUsers.forEach(user => {
+                if (user.id !== req.user.id) {
+                    sendTaskAssignedNotification({
+                        assignerId: req.user.id,
+                        assigneeId: user.id,
+                        cardId: card.id,
+                        cardTitle: card.title,
+                        cardDescription: card.description,
+                        cardPriority: card.priority,
+                        cardDueDate: card.dueDate,
+                        cardKeySeq: card.keySeq,
+                        boardId: boardInfo.id,
+                        boardKey: boardInfo.keySlug,
+                        workspaceId: boardInfo.workspaceId
+                    }).catch(err => {
+                        console.error('Failed to send task notification:', err);
+                    });
+                }
+            });
+
             return validUsers.map(u => ({ userId: u.id, user: u }));
         })(),
-        
+
         // Labels
         (async () => {
             if (!labelIds?.length) return [];
-            
+
             const validLabels = await prisma.label.findMany({
                 where: { boardId, id: { in: labelIds } },
                 select: { id: true, name: true, colorHex: true }
             });
-            
+
             if (!validLabels.length) return [];
-            
+
             await prisma.cardLabel.createMany({
                 data: validLabels.map(l => ({ cardId: card.id, labelId: l.id })),
                 skipDuplicates: true
             });
-            
+
             return validLabels.map(l => ({ labelId: l.id, label: l }));
         })(),
-        
+
         // Attachments
         (async () => {
             if (!attachments?.length) return [];
-            
+
             return prisma.cardAttachment.createManyAndReturn({
                 data: attachments.map(a => ({
                     cardId: card.id,
@@ -175,16 +196,16 @@ async function createCard(req, res) {
 
 async function listCardsByList(req, res) {
     const { listId } = req.params;
-    
+
     const { q, labelId, memberId, offset = '0', limit = '50' } = req.query;
     const take = Math.min(Math.max(parseInt(String(limit), 10) || 50, 1), 200);
     const skip = Math.max(parseInt(String(offset), 10) || 0, 0);
 
     // Get list with board info in one query
-    const list = await prisma.list.findUnique({ 
-        where: { id: listId }, 
-        select: { 
-            id: true, 
+    const list = await prisma.list.findUnique({
+        where: { id: listId },
+        select: {
+            id: true,
             boardId: true,
             board: {
                 select: {
@@ -193,16 +214,16 @@ async function listCardsByList(req, res) {
                     workspaceId: true
                 }
             }
-        } 
+        }
     });
-    
+
     if (!list) return res.status(404).json({ error: 'List not found' });
 
     // Check workspace membership
     const workspaceMember = await prisma.workspaceMember.findFirst({
         where: { workspaceId: list.board.workspaceId, userId: req.user.id }
     });
-    
+
     if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
     // Build where clause
@@ -279,9 +300,9 @@ async function listCardsByList(req, res) {
 
 async function getCard(req, res) {
     const { cardId } = req.params;
-    
+
     // Get card with all related data in one query
-    const card = await prisma.card.findUnique({ 
+    const card = await prisma.card.findUnique({
         where: { id: cardId },
         select: {
             id: true,
@@ -325,19 +346,19 @@ async function getCard(req, res) {
             }
         }
     });
-    
+
     if (!card) return res.status(404).json({ error: 'Card not found' });
-    
+
     // Check workspace membership
     const workspaceMember = await prisma.workspaceMember.findFirst({
         where: { workspaceId: card.board.workspaceId, userId: req.user.id }
     });
-    
+
     if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
-    
+
     // Format response
     const humanKey = makeBoardKey(card.board.keySlug, card.keySeq);
-    res.json({ 
+    res.json({
         card: {
             id: card.id,
             boardId: card.boardId,
@@ -400,7 +421,7 @@ async function moveCard(req, res) {
     const { toListId, toIndex } = parsed.data;
 
     // Get card with board info in one query
-    const card = await prisma.card.findUnique({ 
+    const card = await prisma.card.findUnique({
         where: { id: cardId },
         select: {
             id: true,
@@ -411,14 +432,14 @@ async function moveCard(req, res) {
             }
         }
     });
-    
+
     if (!card) return res.status(404).json({ error: 'Card not found' });
 
     // Check workspace membership
     const workspaceMember = await prisma.workspaceMember.findFirst({
         where: { workspaceId: card.board.workspaceId, userId: req.user.id }
     });
-    
+
     if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
     // Move card - update in parallel
@@ -427,13 +448,13 @@ async function moveCard(req, res) {
             'UPDATE "Card" SET "orderIdx" = "orderIdx" + 1 WHERE "listId" = $1 AND "orderIdx" >= $2 AND "id" != $3',
             toListId, toIndex, cardId
         ),
-        prisma.card.update({ 
-            where: { id: cardId }, 
-            data: { 
-                listId: toListId, 
-                orderIdx: toIndex, 
-                updatedById: req.user.id 
-            } 
+        prisma.card.update({
+            where: { id: cardId },
+            data: {
+                listId: toListId,
+                orderIdx: toIndex,
+                updatedById: req.user.id
+            }
         })
     ]);
 
@@ -446,7 +467,7 @@ async function assignCardMember(req, res) {
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     const { userId } = parsed.data;
 
-    const card = await prisma.card.findUnique({ 
+    const card = await prisma.card.findUnique({
         where: { id: cardId },
         include: {
             board: {
@@ -459,8 +480,8 @@ async function assignCardMember(req, res) {
     const { workspaceMember } = await checkWorkspaceAccess(card.boardId, req.user.id);
     if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
-    const targetMember = await prisma.workspaceMember.findFirst({ 
-        where: { workspaceId: card.board.workspaceId, userId } 
+    const targetMember = await prisma.workspaceMember.findFirst({
+        where: { workspaceId: card.board.workspaceId, userId }
     });
     if (!targetMember) return res.status(400).json({ error: 'User is not a workspace member' });
 
@@ -473,8 +494,17 @@ async function assignCardMember(req, res) {
         sendTaskAssignedNotification({
             assignerId: req.user.id,
             assigneeId: userId,
-            card,
-            boardKey: card.board.keySlug
+            cardId: card.id,
+            cardTitle: card.title,
+            cardDescription: card.description,
+            cardPriority: card.priority,
+            cardDueDate: card.dueDate,
+            cardKeySeq: card.keySeq,
+            boardId: card.board.id,
+            boardKey: card.board.keySlug,
+            workspaceId: card.board.workspaceId
+        }).catch(err => {
+            console.error('Failed to send task notification:', err);
         });
     }
 
