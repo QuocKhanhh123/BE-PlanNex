@@ -1,5 +1,7 @@
 const { prisma } = require('../shared/prisma');
 const { createWorkspaceSchema, inviteMemberSchema, updateWorkspaceSchema, updateMemberRoleSchema } = require('../validators/workspace.validators');
+const { sendWorkspaceInvitationNotification, sendInvitationResponseNotification } = require('../services/notification.service');
+
 
 
 async function createWorkspace(req, res) {
@@ -131,6 +133,13 @@ async function inviteMember(req, res) {
         }
     });
 
+    sendWorkspaceInvitationNotification({
+        inviterId: req.user.id,
+        receiverEmail: email,
+        workspace,
+        invitationId: invitation.id
+    });
+
     res.status(201).json({ invitation });
 }
 
@@ -187,6 +196,13 @@ async function acceptInvitation(req, res) {
         });
     });
 
+    sendInvitationResponseNotification({
+        inviterId: invitation.invitedById,
+        responderId: req.user.id,
+        workspace: invitation.workspace,
+        accepted: true
+    });
+
     res.json({ message: 'Invitation accepted successfully' });
 }
 
@@ -194,7 +210,8 @@ async function rejectInvitation(req, res) {
     const { invitationId } = req.params;
 
     const invitation = await prisma.workspaceInvitation.findUnique({
-        where: { id: invitationId }
+        where: { id: invitationId },
+        include: { workspace: true }
     });
     if (!invitation) return res.status(404).json({ error: 'Invitation not found' });
 
@@ -212,6 +229,13 @@ async function rejectInvitation(req, res) {
             status: 'rejected',
             respondedAt: new Date()
         }
+    });
+
+    sendInvitationResponseNotification({
+        inviterId: invitation.invitedById,
+        responderId: req.user.id,
+        workspace: invitation.workspace,
+        accepted: false
     });
 
     res.json({ message: 'Invitation rejected successfully' });

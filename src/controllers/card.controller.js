@@ -1,5 +1,7 @@
 const { prisma } = require('../shared/prisma');
 const { createCardSchema, updateCardSchema, moveCardSchema, assignMemberSchema } = require('../validators/card.validators');
+const { sendTaskAssignedNotification } = require('../services/notification.service');
+
 
 async function checkWorkspaceAccess(boardId, userId) {
   const board = await prisma.board.findUnique({ 
@@ -444,20 +446,38 @@ async function assignCardMember(req, res) {
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     const { userId } = parsed.data;
 
-    const card = await prisma.card.findUnique({ where: { id: cardId } });
+    const card = await prisma.card.findUnique({ 
+        where: { id: cardId },
+        include: {
+            board: {
+                select: { id: true, keySlug: true, workspaceId: true }
+            }
+        }
+    });
     if (!card) return res.status(404).json({ error: 'Card not found' });
 
-    const { board, workspaceMember } = await checkWorkspaceAccess(card.boardId, req.user.id);
-    if (!board) return res.status(404).json({ error: 'Board not found' });
+    const { workspaceMember } = await checkWorkspaceAccess(card.boardId, req.user.id);
     if (!workspaceMember) return res.status(403).json({ error: 'Not a workspace member' });
 
-    const targetMember = await prisma.workspaceMember.findFirst({ where: { workspaceId: board.workspaceId, userId } });
+    const targetMember = await prisma.workspaceMember.findFirst({ 
+        where: { workspaceId: card.board.workspaceId, userId } 
+    });
     if (!targetMember) return res.status(400).json({ error: 'User is not a workspace member' });
 
     const existingAssignment = await prisma.cardMember.findFirst({ where: { cardId, userId } });
     if (existingAssignment) return res.status(400).json({ error: 'User is already assigned to this card' });
 
     const assignment = await prisma.cardMember.create({ data: { cardId, userId } });
+
+    if (userId !== req.user.id) {
+        sendTaskAssignedNotification({
+            assignerId: req.user.id,
+            assigneeId: userId,
+            card,
+            boardKey: card.board.keySlug
+        });
+    }
+
     res.status(201).json({ assignment });
 }
 

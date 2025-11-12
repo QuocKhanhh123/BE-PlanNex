@@ -60,6 +60,11 @@ model User {
 
   // Card attachments uploaded
   cardAttachmentsUploaded CardAttachment[] @relation("CardAttachmentUploader")
+
+  // Notifications
+  notificationsSent     Notification[]        @relation("NotificationSender")
+  notificationsReceived Notification[]        @relation("NotificationReceiver")
+  notificationSettings  NotificationSetting[]
 }
 
 model RefreshToken {
@@ -267,4 +272,36 @@ model Comment {
   // Self relation: parent <-> children
   parent   Comment?  @relation("CommentParent", fields: [parentId], references: [id], onDelete: SetNull)
   children Comment[] @relation("CommentParent")
+}
+
+model Notification {
+  id             String    @id @default(cuid())
+  type           String    // workspace_invitation|task_assigned|invitation_accepted|invitation_rejected
+  title          String
+  message        String
+  senderId       String?
+  receiverId     String
+  workspaceId    String?
+  cardId         String?
+  invitationId   String?
+  isRead         Boolean   @default(false)
+  readAt         DateTime?
+  createdAt      DateTime  @default(now())
+
+  sender   User? @relation("NotificationSender", fields: [senderId], references: [id], onDelete: SetNull)
+  receiver User  @relation("NotificationReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@index([receiverId, isRead])
+  @@index([receiverId, createdAt])
+}
+
+model NotificationSetting {
+  id                        String  @id @default(cuid())
+  userId                    String  @unique
+  emailNotifications        Boolean @default(true)
+  taskAssignedEmail         Boolean @default(true)
+  workspaceInviteEmail      Boolean @default(true)
+  invitationResponseEmail   Boolean @default(true)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
