@@ -1,6 +1,6 @@
 const { prisma } = require('../shared/prisma');
 const { hashPassword, verifyPassword } = require('../utils/hash');
-const { registerSchema, loginSchema } = require('../validators/auth.validators');
+const { registerSchema, loginSchema, updateProfileSchema } = require('../validators/auth.validators');
 const { verifyRefresh } = require('../utils/jwt');
 const { issueTokenPair, rotateRefreshToken, revokeRefreshToken } = require('../services/token.service');
 
@@ -90,9 +90,60 @@ async function logout(req, res) {
 
 async function me(req, res) {
     // populated by auth middleware
-    const u = await prisma.user.findUnique({ where: { id: req.user.id }, select: { id: true, email: true, fullName: true, status: true, lastLoginAt: true } });
+    const u = await prisma.user.findUnique({ 
+        where: { id: req.user.id }, 
+        select: { 
+            id: true, 
+            email: true, 
+            fullName: true, 
+            phone: true,
+            avatar: true,
+            description: true,
+            status: true, 
+            lastLoginAt: true,
+            createdAt: true,
+            updatedAt: true
+        } 
+    });
     return res.json({ user: u });
 }
 
+async function updateProfile(req, res) {
+    const parsed = updateProfileSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const { fullName, phone, avatar, description } = parsed.data;
 
-module.exports = { register, login, refresh, logout, me };
+    const updateData = {};
+    if (fullName !== undefined) updateData.fullName = fullName;
+    if (phone !== undefined) updateData.phone = phone === null ? null : phone;
+    if (avatar !== undefined) updateData.avatar = avatar === null ? null : avatar;
+    if (description !== undefined) updateData.description = description === null ? null : description;
+
+    if (phone && phone !== null) {
+        const existingUser = await prisma.user.findFirst({
+            where: { phone, id: { not: req.user.id } }
+        });
+        if (existingUser) return res.status(400).json({ error: 'Phone number already in use' });
+    }
+
+    const updated = await prisma.user.update({
+        where: { id: req.user.id },
+        data: updateData,
+        select: {
+            id: true,
+            email: true,
+            fullName: true,
+            phone: true,
+            avatar: true,
+            description: true,
+            status: true,
+            lastLoginAt: true,
+            createdAt: true,
+            updatedAt: true
+        }
+    });
+
+    return res.json({ user: updated });
+}
+
+module.exports = { register, login, refresh, logout, me, updateProfile };

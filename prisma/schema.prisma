@@ -23,6 +23,8 @@ model User {
   phone        String?   @unique
   passwordHash String
   fullName     String
+  avatar       String?
+  description  String?
   status       String    @default("active")
   lastLoginAt  DateTime?
   createdAt    DateTime  @default(now())
