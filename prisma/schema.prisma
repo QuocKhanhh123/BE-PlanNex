@@ -18,20 +18,23 @@ datasource db {
 }
 
 model User {
-  id           String    @id @default(cuid())
-  email        String    @unique
-  phone        String?   @unique
-  passwordHash String
-  fullName     String
-  avatar       String?
-  description  String?
-  status       String    @default("active")
-  lastLoginAt  DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id                String    @id @default(cuid())
+  email             String    @unique
+  phone             String?   @unique
+  passwordHash      String
+  fullName          String
+  avatar            String?
+  description       String?
+  status            String    @default("pending") // pending|active|suspended
+  emailVerified     Boolean   @default(false)
+  emailVerifiedAt   DateTime?
+  lastLoginAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   // Tokens
-  refreshTokens RefreshToken[]
+  refreshTokens     RefreshToken[]
+  emailVerifications EmailVerification[]
 
   // === Back-relations (để fix lỗi) ===
   // Workspace owner
@@ -304,4 +307,19 @@ model NotificationSetting {
   invitationResponseEmail   Boolean @default(true)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model EmailVerification {
+  id         String    @id @default(cuid())
+  userId     String
+  otp        String    // 6-digit OTP code
+  attempts   Int       @default(0) // Track failed attempts
+  expiresAt  DateTime
+  verifiedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([otp])
 }

@@ -3,6 +3,7 @@ const { hashPassword, verifyPassword } = require('../utils/hash');
 const { registerSchema, loginSchema, updateProfileSchema, changePasswordSchema } = require('../validators/auth.validators');
 const { verifyRefresh } = require('../utils/jwt');
 const { issueTokenPair, rotateRefreshToken, revokeRefreshToken } = require('../services/token.service');
+const { createEmailVerification, verifyOTP, resendVerificationEmail } = require('../services/verification.service');
 
 
 function pickUA(req) { return req.headers['user-agent'] || 'unknown'; }
@@ -14,17 +15,64 @@ async function register(req, res) {
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     const { email, password, fullName, phone } = parsed.data;
 
+    // Check if email exists
+    const existedEmail = await prisma.user.findUnique({ where: { email } });
+    if (existedEmail) return res.status(409).json({ error: 'Email already in use' });
 
-    const existed = await prisma.user.findUnique({ where: { email } });
-    if (existed) return res.status(409).json({ error: 'Email already in use' });
-
+    // Check if phone exists (if phone is provided)
+    if (phone) {
+        const existedPhone = await prisma.user.findUnique({ where: { phone } });
+        if (existedPhone) return res.status(409).json({ error: 'Phone number already in use' });
+    }
 
     const passwordHash = await hashPassword(password);
-    const user = await prisma.user.create({ data: { email, passwordHash, fullName, phone } });
 
+    try {
+        const user = await prisma.user.create({
+            data: {
+                email,
+                passwordHash,
+                fullName,
+                phone,
+                status: 'pending', // User starts as pending until email verified
+                emailVerified: false
+            }
+        });
 
-    const pair = await issueTokenPair(user, pickUA(req), pickIP(req));
-    return res.status(201).json({ user: { id: user.id, email: user.email, fullName: user.fullName }, ...pair });
+        // Send verification email
+        try {
+            await createEmailVerification(user.id, user.email, user.fullName);
+        } catch (error) {
+            console.error('Failed to send verification email:', error);
+            // Don't fail registration if email fails
+        }
+
+        // Don't issue tokens yet - user needs to verify email first
+        return res.status(201).json({
+            user: {
+                id: user.id,
+                email: user.email,
+                fullName: user.fullName,
+                emailVerified: false,
+                status: 'pending'
+            },
+            message: 'Registration successful! Please check your email to verify your account.'
+        });
+    } catch (error) {
+        console.error('Registration error:', error);
+
+        // Handle Prisma unique constraint errors
+        if (error.code === 'P2002') {
+            const field = error.meta?.target?.[0];
+            if (field === 'email') {
+                return res.status(409).json({ error: 'Email already in use' });
+            } else if (field === 'phone') {
+                return res.status(409).json({ error: 'Phone number already in use' });
+            }
+        }
+
+        return res.status(500).json({ error: 'Registration failed. Please try again.' });
+    }
 }
 
 
@@ -36,6 +84,17 @@ async function login(req, res) {
 
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+
+    // Check email verification
+    if (!user.emailVerified) {
+        return res.status(403).json({
+            error: 'Email not verified',
+            code: 'EMAIL_NOT_VERIFIED',
+            userId: user.id,
+            email: user.email
+        });
+    }
+
     if (user.status !== 'active') return res.status(403).json({ error: 'Account is not active' });
 
 
@@ -90,20 +149,20 @@ async function logout(req, res) {
 
 async function me(req, res) {
     // populated by auth middleware
-    const u = await prisma.user.findUnique({ 
-        where: { id: req.user.id }, 
-        select: { 
-            id: true, 
-            email: true, 
-            fullName: true, 
+    const u = await prisma.user.findUnique({
+        where: { id: req.user.id },
+        select: {
+            id: true,
+            email: true,
+            fullName: true,
             phone: true,
             avatar: true,
             description: true,
-            status: true, 
+            status: true,
             lastLoginAt: true,
             createdAt: true,
             updatedAt: true
-        } 
+        }
     });
     return res.json({ user: u });
 }
@@ -172,4 +231,57 @@ async function changePassword(req, res) {
     return res.json({ message: 'Password changed successfully' });
 }
 
-module.exports = { register, login, refresh, logout, me, updateProfile, changePassword };
+async function verifyEmail(req, res) {
+    const { userId, otp } = req.body;
+
+    if (!userId || !otp) {
+        return res.status(400).json({ error: 'User ID and OTP are required' });
+    }
+
+    try {
+        const result = await verifyOTP(userId, otp);
+        return res.json({
+            success: true,
+            message: 'Email verified successfully! You can now login.',
+            user: {
+                id: result.user.id,
+                email: result.user.email,
+                fullName: result.user.fullName,
+                emailVerified: true
+            }
+        });
+    } catch (error) {
+        return res.status(400).json({ error: error.message });
+    }
+}
+
+async function resendVerification(req, res) {
+    const { email } = req.body;
+
+    if (!email) {
+        return res.status(400).json({ error: 'Email is required' });
+    }
+
+    try {
+        const user = await prisma.user.findUnique({ where: { email } });
+
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        if (user.emailVerified) {
+            return res.status(400).json({ error: 'Email already verified' });
+        }
+
+        await resendVerificationEmail(user.id);
+
+        return res.json({
+            success: true,
+            message: 'Verification email sent successfully! Please check your inbox.'
+        });
+    } catch (error) {
+        return res.status(400).json({ error: error.message });
+    }
+}
+
+module.exports = { register, login, refresh, logout, me, updateProfile, changePassword, verifyEmail, resendVerification };

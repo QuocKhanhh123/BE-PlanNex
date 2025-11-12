@@ -101,7 +101,7 @@ function getTaskAssignedEmailTemplate(task, assignerName, taskUrl) {
 function getInvitationResponseEmailTemplate(workspace, responderName, accepted) {
     const status = accepted ? 'đã chấp nhận' : 'đã từ chối';
     const emoji = accepted ? '✅' : '❌';
-    
+
     return `
         <!DOCTYPE html>
         <html>
@@ -128,9 +128,70 @@ function getInvitationResponseEmailTemplate(workspace, responderName, accepted) 
     `;
 }
 
+function getOTPEmailTemplate(fullName, otp) {
+    return `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f4f4; margin: 0; padding: 0; }
+                .container { max-width: 600px; margin: 20px auto; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+                .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 20px; text-align: center; }
+                .header h1 { color: white; margin: 0; font-size: 28px; }
+                .content { padding: 40px 30px; }
+                .otp-box { background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%); padding: 30px; border-radius: 12px; text-align: center; margin: 30px 0; border: 3px solid #667eea; }
+                .otp-code { font-size: 48px; font-weight: bold; color: #667eea; letter-spacing: 8px; font-family: 'Courier New', monospace; text-shadow: 2px 2px 4px rgba(0,0,0,0.1); }
+                .otp-label { font-size: 14px; color: #666; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 2px; }
+                .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; border-top: 1px solid #e9ecef; }
+                .warning { background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; border-radius: 4px; }
+                .info-box { background: #e7f3ff; border-left: 4px solid #2196F3; padding: 15px; margin: 20px 0; border-radius: 4px; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>🔐 Mã Xác Thực OTP</h1>
+                </div>
+                <div class="content">
+                    <p>Xin chào <strong>${fullName}</strong>,</p>
+                    <p>Cảm ơn bạn đã đăng ký tài khoản PlanNex!</p>
+                    <p>Đây là mã OTP để xác thực email của bạn:</p>
+                    
+                    <div class="otp-box">
+                        <div class="otp-label">Mã OTP của bạn</div>
+                        <div class="otp-code">${otp}</div>
+                    </div>
+                    
+                    <div class="info-box">
+                        <p style="margin: 0;"><strong>📱 Cách sử dụng:</strong></p>
+                        <p style="margin: 10px 0 0 0;">Nhập mã OTP này vào trang xác thực để hoàn tất đăng ký tài khoản.</p>
+                    </div>
+                    
+                    <div class="warning">
+                        <p><strong>⚠️ Lưu ý quan trọng:</strong></p>
+                        <ul style="margin: 10px 0; padding-left: 20px;">
+                            <li>Mã OTP có hiệu lực trong <strong>10 phút</strong></li>
+                            <li>Bạn có <strong>5 lần thử</strong> để nhập đúng mã</li>
+                            <li>Không chia sẻ mã này với bất kỳ ai</li>
+                            <li>Nếu bạn không yêu cầu mã này, vui lòng bỏ qua email</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="footer">
+                    <p>Email này được gửi từ <strong>PlanNex</strong></p>
+                    <p>Nếu bạn gặp vấn đề, vui lòng liên hệ support@plannex.com</p>
+                    <p style="margin-top: 10px; color: #999;">© 2025 PlanNex. All rights reserved.</p>
+                </div>
+            </div>
+        </body>
+        </html>
+    `;
+}
+
 module.exports = {
     sendEmail,
     getWorkspaceInvitationEmailTemplate,
     getTaskAssignedEmailTemplate,
-    getInvitationResponseEmailTemplate
+    getInvitationResponseEmailTemplate,
+    getOTPEmailTemplate
 };
