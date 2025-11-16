@@ -30,4 +30,23 @@ const changePasswordSchema = z.object({
     path: ["confirmPassword"]
 });
 
-module.exports = { registerSchema, loginSchema, updateProfileSchema, changePasswordSchema };
+const forgotPasswordSchema = z.object({
+    email: z.string().email()
+});
+
+const verifyResetCodeSchema = z.object({
+    email: z.string().email(),
+    code: z.string().length(6, "Code must be 6 digits")
+});
+
+const resetPasswordSchema = z.object({
+    email: z.string().email(),
+    code: z.string().length(6, "Code must be 6 digits"),
+    newPassword: z.string().min(6),
+    confirmPassword: z.string().min(6)
+}).refine((data) => data.newPassword === data.confirmPassword, {
+    message: "New password and confirm password do not match",
+    path: ["confirmPassword"]
+});
+
+module.exports = { registerSchema, loginSchema, updateProfileSchema, changePasswordSchema, forgotPasswordSchema, verifyResetCodeSchema, resetPasswordSchema };

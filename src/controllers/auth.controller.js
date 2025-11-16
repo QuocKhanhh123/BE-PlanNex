@@ -1,8 +1,9 @@
 const { prisma } = require('../shared/prisma');
 const { hashPassword, verifyPassword } = require('../utils/hash');
-const { registerSchema, loginSchema, updateProfileSchema, changePasswordSchema } = require('../validators/auth.validators');
+const { registerSchema, loginSchema, updateProfileSchema, changePasswordSchema, forgotPasswordSchema, resetPasswordSchema, verifyResetCodeSchema } = require('../validators/auth.validators');
 const { verifyRefresh } = require('../utils/jwt');
 const { issueTokenPair, rotateRefreshToken, revokeRefreshToken } = require('../services/token.service');
+const crypto = require('crypto');
 
 
 function pickUA(req) { return req.headers['user-agent'] || 'unknown'; }
@@ -172,4 +173,83 @@ async function changePassword(req, res) {
     return res.json({ message: 'Password changed successfully' });
 }
 
-module.exports = { register, login, refresh, logout, me, updateProfile, changePassword };
+function generateResetCode() {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+async function sendResetCode(req, res) {
+    const parsed = forgotPasswordSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const { email } = parsed.data;
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+        return res.json({ message: 'User not found' });
+    }
+
+    const resetCode = generateResetCode();
+    const resetExpires = new Date();
+    resetExpires.setMinutes(resetExpires.getMinutes() + 10);
+
+    await prisma.user.update({
+        where: { id: user.id },
+        data: {
+            passwordResetCode: resetCode,
+            passwordResetExpires: resetExpires
+        }
+    });
+
+    return res.json({ message: 'If email exists, password reset code has been sent' });
+}
+
+async function verifyResetCode(req, res) {
+    const parsed = verifyResetCodeSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const { email, code } = parsed.data;
+
+    const user = await prisma.user.findFirst({
+        where: {
+            email,
+            passwordResetCode: code,
+            passwordResetExpires: { gt: new Date() }
+        }
+    });
+
+    if (!user) {
+        return res.status(400).json({ error: 'Invalid or expired reset code' });
+    }
+
+    return res.json({
+        message: 'Reset code verified successfully',
+        email: user.email
+     });
+}
+
+async function resetPassword(req, res) {
+    const parsed = resetPasswordSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const { email, newPassword, confirmPassword } = parsed.data;
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+        return res.status(400).json({ error: 'User not found' });
+    }
+
+    if (newPassword !== confirmPassword) {
+        return res.status(400).json({ error: 'Confirm password not matched' });
+    }
+
+    const newPasswordHash = await hashPassword(newPassword);
+    await prisma.user.update({
+        where: { id: req.user.id },
+        data: {
+            passwordHash: newPasswordHash,
+            passwordResetCode: null,
+            passwordResetExpires: null
+        }
+    });
+
+    return res.json({ message: 'Password reset successfully' });
+}
+
+module.exports = { register, login, refresh, logout, me, updateProfile, changePassword, sendResetCode, verifyResetCode, resetPassword };
