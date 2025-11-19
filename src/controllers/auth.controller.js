@@ -4,6 +4,7 @@ const { registerSchema, loginSchema, updateProfileSchema, changePasswordSchema, 
 const { verifyRefresh } = require('../utils/jwt');
 const { issueTokenPair, rotateRefreshToken, revokeRefreshToken } = require('../services/token.service');
 const { createEmailVerification, verifyOTP, resendVerificationEmail, createPasswordResetRequest, resetPasswordWithCode } = require('../services/verification.service');
+const { logActivity, getClientInfo } = require('../services/activity.service');
 
 
 function pickUA(req) { return req.headers['user-agent'] || 'unknown'; }
@@ -104,9 +105,15 @@ async function login(req, res) {
 
     await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
 
+    const clientInfo = getClientInfo(req);
+    logActivity({
+        userId: user.id,
+        action: 'user_login',
+        ...clientInfo
+    });
 
     const pair = await issueTokenPair(user, pickUA(req), pickIP(req));
-    return res.json({ user: { id: user.id, email: user.email, fullName: user.fullName }, ...pair });
+    return res.json({ user: { id: user.id, email: user.email, fullName: user.fullName, role: user.role }, ...pair });
 }
 
 
@@ -136,10 +143,16 @@ async function logout(req, res) {
     const token = req.body.refreshToken;
     if (!token) return res.status(400).json({ error: 'Missing refreshToken' });
 
-
     try {
         const decoded = verifyRefresh(token);
         await revokeRefreshToken(token, decoded.sub);
+        
+        const clientInfo = getClientInfo(req);
+        logActivity({
+            userId: decoded.sub,
+            action: 'user_logout',
+            ...clientInfo
+        });
     } catch {
         // ignore invalid token to prevent user enumeration
     }
@@ -158,6 +171,7 @@ async function me(req, res) {
             phone: true,
             avatar: true,
             description: true,
+            role: true,
             status: true,
             lastLoginAt: true,
             createdAt: true,
